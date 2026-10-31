@@ -186,18 +186,19 @@ func TestEmailResendTransport(t *testing.T) {
 }
 
 func TestEmailOnlyMailsActionableEvents(t *testing.T) {
-	n := &emailNotifier{}
+	n := &emailNotifier{cfg: emailConfig{minBps: 100}}
 	cases := []struct {
 		e    Event
 		want bool
 	}{
-		{Event{Kind: kindVenueDepeg, Severity: "alert"}, true},
-		{Event{Kind: kindVenueDepeg, Severity: "watch"}, false},
-		{Event{Kind: kindDispersion, Severity: "watch"}, false},
-		{Event{Kind: kindVenueDown, Severity: "watch"}, true},
-		{Event{Kind: kindVenueNormal, Severity: "info"}, true},
-		{Event{Kind: kindStablecoinPeg, Severity: "alert"}, true},
-		{Event{Kind: kindStablecoinPeg, Severity: "info"}, true},
+		{Event{Kind: kindVenueDepeg, Symbol: "BTC", Severity: "alert", DevBps: 250}, true},
+		{Event{Kind: kindVenueDepeg, Symbol: "BTC", Severity: "watch", DevBps: 250}, false},
+		{Event{Kind: kindVenueDepeg, Symbol: "BTC", Severity: "alert", DevBps: 80}, false},
+		{Event{Kind: kindDispersion, Symbol: "BTC", Severity: "watch", DevBps: 400}, false},
+		{Event{Kind: kindVenueDown, Symbol: "BTC", Venue: "binance", Severity: "watch"}, true},
+		// A recovery is only sent if the outage itself was mailed.
+		{Event{Kind: kindVenueRecover, Symbol: "BTC", Venue: "binance", Severity: "info"}, true},
+		{Event{Kind: kindVenueRecover, Symbol: "BTC", Venue: "binance", Severity: "info"}, false},
 	}
 	for i, c := range cases {
 		if got := n.wanted(c.e); got != c.want {
@@ -208,21 +209,39 @@ func TestEmailOnlyMailsActionableEvents(t *testing.T) {
 	if !n.wanted(Event{Kind: kindDispersion, Severity: "watch"}) {
 		t.Fatal("sendAll should forward watch events")
 	}
+}
 
-	// Magnitude gate: the mailbox takes only deviations above the configured
-	// floor, while the peg keeps its own absolute test.
-	g := &emailNotifier{cfg: emailConfig{minBps: 100}}
-	if g.wanted(Event{Kind: kindVenueDepeg, Severity: "alert", DevBps: 80}) {
-		t.Fatal("80bps alert should not be mailed at a 100bps gate")
+func TestEmailResolutionOnlyFollowsAMailedAlert(t *testing.T) {
+	n := &emailNotifier{cfg: emailConfig{minBps: 100}}
+
+	// Watch-level wobble: never mailed, so its resolution must stay silent.
+	if n.wanted(Event{Kind: kindVenueDepeg, Symbol: "WLD", Venue: "cryptocom", Severity: "watch", DevBps: 90}) {
+		t.Fatal("watch-level depeg should not be mailed")
 	}
-	if !g.wanted(Event{Kind: kindVenueDepeg, Severity: "alert", DevBps: -150}) {
-		t.Fatal("150bps alert should pass a 100bps gate")
+	if n.wanted(Event{Kind: kindVenueNormal, Symbol: "WLD", Venue: "cryptocom", Severity: "info", DevBps: 2}) {
+		t.Fatal("resolution of an unmailed watch alert was mailed")
 	}
-	if !g.wanted(Event{Kind: kindStablecoinPeg, Severity: "alert", DevBps: 60}) {
-		t.Fatal("peg alerts must not be filtered by the magnitude gate")
+
+	// Alert-level: opening and its resolution both go out, exactly once.
+	if !n.wanted(Event{Kind: kindVenueDepeg, Symbol: "XLM", Venue: "htx", Severity: "alert", DevBps: 420}) {
+		t.Fatal("alert-level depeg should be mailed")
 	}
-	if !g.wanted(Event{Kind: kindVenueDown, Severity: "watch"}) {
-		t.Fatal("outages must not be filtered by the magnitude gate")
+	if !n.wanted(Event{Kind: kindVenueNormal, Symbol: "XLM", Venue: "htx", Severity: "info", DevBps: 5}) {
+		t.Fatal("resolution of a mailed alert should be mailed")
+	}
+	if n.wanted(Event{Kind: kindVenueNormal, Symbol: "XLM", Venue: "htx", Severity: "info", DevBps: 5}) {
+		t.Fatal("resolution was mailed twice")
+	}
+
+	// Peg keeps its own absolute test, and its recovery follows the same rule.
+	if !n.wanted(Event{Kind: kindStablecoinPeg, Symbol: "USDT", Severity: "alert", DevBps: 80}) {
+		t.Fatal("peg break should be mailed")
+	}
+	if !n.wanted(Event{Kind: kindStablecoinPeg, Symbol: "USDT", Severity: "info", DevBps: 2}) {
+		t.Fatal("peg recovery should be mailed")
+	}
+	if n.wanted(Event{Kind: kindStablecoinPeg, Symbol: "USDT", Severity: "info", DevBps: 2}) {
+		t.Fatal("peg recovery mailed twice")
 	}
 }
 

@@ -17,6 +17,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -48,6 +49,13 @@ type emailConfig struct {
 type emailNotifier struct {
 	cfg emailConfig
 	c   *http.Client
+
+	// mailed remembers which openings actually went out, so a resolution is
+	// only reported for something the mailbox was told about. Without this,
+	// every watch-level wobble sends a recovery email for an alert that never
+	// existed — 31 of the first 36 messages were exactly that.
+	mu     sync.Mutex
+	mailed map[string]int64
 }
 
 func (n *emailNotifier) Name() string { return "email" }
@@ -59,16 +67,60 @@ func (n *emailNotifier) wanted(e Event) bool {
 	if n.cfg.sendAll {
 		return true
 	}
-	// Outages, resolutions and the peg have their own semantics; the peg is
-	// already an absolute test and must not be filtered by magnitude here.
+	key := e.Symbol + "|" + e.Venue
 	switch e.Kind {
-	case kindVenueDown, kindVenueNormal, kindVenueRecover, kindStablecoinPeg:
+	case kindVenueNormal:
+		// Only close out an alert the mailbox actually saw.
+		return n.takeMailed(key)
+	case kindVenueRecover:
+		return n.takeMailed("down|" + e.Venue)
+	case kindVenueDown:
+		n.markMailed("down|" + e.Venue)
 		return true
+	case kindStablecoinPeg:
+		if e.Severity == "alert" {
+			n.markMailed(key)
+			return true
+		}
+		return n.takeMailed(key)
 	}
 	if e.Severity != "alert" {
 		return false
 	}
-	return math.Abs(e.DevBps) >= n.cfg.minBps
+	if math.Abs(e.DevBps) < n.cfg.minBps {
+		return false
+	}
+	n.markMailed(key)
+	return true
+}
+
+// markMailed records an opening event, pruning anything older than a day so
+// the map cannot grow without bound.
+func (n *emailNotifier) markMailed(key string) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.mailed == nil {
+		n.mailed = map[string]int64{}
+	}
+	now := time.Now().UnixMilli()
+	for k, at := range n.mailed {
+		if now-at > 24*60*60*1000 {
+			delete(n.mailed, k)
+		}
+	}
+	n.mailed[key] = now
+}
+
+// takeMailed reports whether an opening was mailed and consumes it, so one
+// alert cannot produce a stream of resolutions.
+func (n *emailNotifier) takeMailed(key string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	_, ok := n.mailed[key]
+	if ok {
+		delete(n.mailed, key)
+	}
+	return ok
 }
 
 func (n *emailNotifier) Notify(e Event) {

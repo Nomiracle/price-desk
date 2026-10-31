@@ -57,7 +57,8 @@
 - **告警通道**：`/etc/price-alert.env`（600），多通道同时生效，journal 始终保留一份。
   - Telegram：`PRICE_ALERT_TELEGRAM_TOKEN` + `PRICE_ALERT_TELEGRAM_CHAT`。
   - 邮件（任一传输即可）：收件人 `PRICE_ALERT_EMAIL_TO`（逗号分隔）；SMTP 组 `PRICE_ALERT_SMTP_HOST/PORT/USER/PASS/TLS`（`TLS=implicit` 对应 465，`starttls` 对应 587；AUTH 先试 PLAIN 再试 LOGIN，兼容 QQ/Gmail/Mailgun/SendGrid/Brevo/SES），或 Resend 组 `PRICE_ALERT_RESEND_KEY`（只需一个 key，`FROM` 默认 `onboarding@resend.dev`）。
-  - 邮件默认只发**需要人处理**的事件（`severity=alert`、行情中断、脱锚回归、稳定币回锚），避免 watch 级样本塞满邮箱；`PRICE_ALERT_EMAIL_ALL=1` 可全量。
+  - 邮件默认只发**需要人处理**的事件（`severity=alert`、行情中断、稳定币回锚），watch 级样本不进邮箱；`PRICE_ALERT_EMAIL_ALL=1` 可全量。
+  - **回归邮件只在对应的 alert 已经发过邮件时才发**：watch 级抖动本身不寄信，它的「回归」也不寄；实现上按 `币种|场所` 配对，一次 alert 只消费一次回归。线上首批 36 封邮件里 31 封正是「没发过 alert 却发了回归」，已修。
   - 当前线上**只启用邮件**：Resend（`onboarding@resend.dev` 发件）→ `you@example.com`，`/api/status` 显示 `notifier=email`；Telegram 已按用户要求停用（代码保留该通道，加回两个环境变量即可恢复）。
   - 坑一：`PRICE_ALERT_EMAIL_FROM` 含 `<...>` 时必须写引号（`"Price Desk <onboarding@resend.dev>"`），否则 shell `source` 会报 syntax error。
   - 坑二：Resend 的 send-only key 不能调 `GET /emails/{id}` 查投递状态（401 `restricted_api_key`），验证只能看发送返回的 `id` 与日志 `email: resend accepted id=...`。
