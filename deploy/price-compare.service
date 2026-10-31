@@ -1,0 +1,21 @@
+[Unit]
+Description=Price Desk (多交易所比价) - Go spot ticker aggregator
+Documentation=file:///srv/price-compare/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/srv/price-compare
+EnvironmentFile=-/etc/price-alert.env
+ExecStart=/srv/price-compare/price-compare -addr 127.0.0.1:8990 -static "" -state /var/lib/price-compare -interval 60s -warm-interval 20s""
+Restart=always
+RestartSec=3
+StandardOutput=append:/var/log/price-compare.log
+StandardError=append:/var/log/price-compare.log
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

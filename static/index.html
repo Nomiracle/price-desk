@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#080a0f">
+<meta name="description" content="同一交易对在多家交易所的现货价格、买卖盘口与跨所价差对比">
+<title>Price Desk · 多交易所比价</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23080a0f'/%3E%3Cpath d='M14 42 L26 30 L36 38 L50 20' stroke='%23a8ff78' stroke-width='5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#080a0f;--panel:#0f131b;--panel2:#121722;--line:rgba(255,255,255,.08);
+  --text:#eef1f7;--muted:#8992a5;--dim:#5f6779;
+  --up:#5ee6a8;--down:#ff7c8b;--accent:#a8ff78;--accent2:#78ffd6;--warn:#ffcf6b;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0;min-height:100vh;color:var(--text);background:var(--bg);
+  font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  background-image:radial-gradient(900px 520px at 88% -12%,rgba(120,255,214,.10),transparent 62%),radial-gradient(720px 460px at -8% 18%,rgba(168,255,120,.07),transparent 60%);
+}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.35;background-image:linear-gradient(rgba(255,255,255,.016) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.016) 1px,transparent 1px);background-size:44px 44px;mask-image:linear-gradient(to bottom,#000,transparent 82%)}
+a{color:inherit;text-decoration:none}
+button,input,select{font:inherit;color:inherit}
+.wrap{position:relative;width:min(1240px,calc(100% - 40px));margin:0 auto;padding:44px 0 48px}
+
+/* header */
+.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:34px}
+.brand{display:flex;align-items:center;gap:10px;color:var(--accent);font:700 11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.2em;text-transform:uppercase}
+.brand i{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 12px rgba(168,255,120,.8);animation:pulse 2.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.top-right{display:flex;align-items:center;gap:14px;color:var(--dim);font:600 10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.14em;text-transform:uppercase}
+.hero{display:grid;grid-template-columns:1.5fr 1fr;gap:36px;align-items:end;margin-bottom:30px}
+h1{margin:0 0 10px;font-size:clamp(38px,6vw,66px);line-height:.96;letter-spacing:-.055em;font-weight:760}
+h1 em{font-style:normal;color:var(--accent)}
+.lede{margin:0;max-width:44ch;color:var(--muted);font-size:14px;line-height:1.65}
+.picker{display:flex;flex-direction:column;gap:9px}
+.picker label{color:var(--dim);font:700 10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.16em;text-transform:uppercase}
+.search{position:relative;display:flex;align-items:center}
+.search input{
+  width:100%;padding:14px 92px 14px 16px;border:1px solid rgba(255,255,255,.12);border-radius:14px;
+  background:rgba(255,255,255,.035);outline:none;font:600 15px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em;transition:.2s;
+}
+.search input:focus{border-color:rgba(168,255,120,.55);box-shadow:0 0 0 3px rgba(168,255,120,.08);background:rgba(255,255,255,.05)}
+.search input::placeholder{color:#5d6576;letter-spacing:0}
+.search .pair{position:absolute;right:12px;color:var(--dim);font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;pointer-events:none}
+.chips{display:flex;flex-wrap:wrap;gap:7px}
+.chip{
+  padding:6px 10px;border:1px solid var(--line);border-radius:999px;background:rgba(255,255,255,.02);
+  color:var(--muted);font:600 11px ui-monospace,SFMono-Regular,Menlo,monospace;cursor:pointer;transition:.18s;
+}
+.chip:hover{border-color:rgba(168,255,120,.4);color:var(--text)}
+.chip.on{border-color:rgba(168,255,120,.55);background:rgba(168,255,120,.12);color:var(--accent)}
+
+/* dislocation monitor */
+.watch{display:none;margin:0 0 18px;padding:13px 15px;border:1px solid var(--line);border-radius:16px;background:linear-gradient(150deg,rgba(255,255,255,.045),rgba(255,255,255,.012))}
+.watch.on{display:block}
+.watch-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.watch-title{display:flex;align-items:center;gap:8px;color:var(--dim);font:700 10px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.16em;text-transform:uppercase}
+.watch-title i{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 10px rgba(168,255,120,.75)}
+.watch-state{color:var(--muted);font:600 10.5px ui-monospace,SFMono-Regular,Menlo,monospace}
+.watch-state b{color:var(--text);font-weight:600}
+.watch-list{margin-top:10px;display:grid;gap:6px}
+.wev{display:flex;align-items:center;gap:9px;flex-wrap:wrap;color:var(--muted);font:600 11.5px ui-monospace,SFMono-Regular,Menlo,monospace}
+.wev b{color:var(--text);font-weight:600}
+.wev .sev{font:700 9px ui-monospace,SFMono-Regular,Menlo,monospace;padding:2px 6px;border-radius:999px;border:1px solid var(--line);letter-spacing:.04em}
+.wev .sev.alert{color:var(--down);border-color:rgba(255,124,139,.4);background:rgba(255,124,139,.1)}
+.wev .sev.watch{color:var(--warn);border-color:rgba(255,207,107,.35);background:rgba(255,207,107,.08)}
+.wev .sev.info{color:var(--up);border-color:rgba(94,230,168,.3);background:rgba(94,230,168,.07)}
+.wev .t{margin-left:auto;color:var(--dim)}
+
+/* stat cards */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.stat{position:relative;padding:16px 17px 15px;border:1px solid var(--line);border-radius:16px;background:linear-gradient(150deg,rgba(255,255,255,.045),rgba(255,255,255,.014));overflow:hidden}
+.stat .k{display:flex;align-items:center;justify-content:space-between;gap:8px;color:var(--dim);font:700 9.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.15em;text-transform:uppercase}
+.stat .v{margin-top:12px;font:600 25px/1.05 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.045em;font-variant-numeric:tabular-nums}
+.stat .s{margin-top:7px;color:var(--muted);font-size:11.5px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.stat.good .v{color:var(--up)}.stat.bad .v{color:var(--down)}.stat.accent .v{color:var(--accent2)}
+.stat .badge{font-size:9px;letter-spacing:.08em;color:var(--dim);border:1px solid var(--line);border-radius:999px;padding:2px 6px;text-transform:none;letter-spacing:0}
+
+/* panel */
+.panel{border:1px solid var(--line);border-radius:20px;background:linear-gradient(180deg,rgba(255,255,255,.035),rgba(255,255,255,.012));overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.35)}
+.toolbar{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;padding:14px 16px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.012)}
+.tb-left{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.pairbig{font:700 13px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em}
+.pairbig span{color:var(--dim)}
+.status{color:var(--muted);font:500 11px ui-monospace,SFMono-Regular,Menlo,monospace}
+.status.err{color:var(--down)}
+.status b{color:var(--text);font-weight:600}
+.tb-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.btn{
+  display:inline-flex;align-items:center;gap:7px;padding:8px 12px;border-radius:10px;border:1px solid var(--line);
+  background:rgba(255,255,255,.035);color:var(--muted);cursor:pointer;font-size:11.5px;transition:.18s;white-space:nowrap;
+}
+.btn:hover{color:var(--text);border-color:rgba(255,255,255,.18)}
+.btn.primary{border-color:rgba(168,255,120,.32);background:rgba(168,255,120,.1);color:var(--accent)}
+.btn.primary:hover{background:rgba(168,255,120,.16)}
+.btn[aria-pressed="true"]{border-color:rgba(120,255,214,.4);background:rgba(120,255,214,.1);color:var(--accent2)}
+.btn svg{width:12px;height:12px}
+select.btn{appearance:none;padding-right:24px;background-image:linear-gradient(45deg,transparent 50%,#6a7284 50%),linear-gradient(135deg,#6a7284 50%,transparent 50%);background-position:calc(100% - 13px) 50%,calc(100% - 9px) 50%;background-size:4px 4px,4px 4px;background-repeat:no-repeat}
+.toggle{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:11.5px;cursor:pointer;user-select:none}
+.toggle input{appearance:none;width:30px;height:17px;border-radius:999px;background:rgba(255,255,255,.14);position:relative;cursor:pointer;transition:.2s;flex:none}
+.toggle input:after{content:"";position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#8b93a4;transition:.2s}
+.toggle input:checked{background:rgba(168,255,120,.28)}
+.toggle input:checked:after{transform:translateX(13px);background:var(--accent)}
+
+/* table */
+.table-scroll{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:760px}
+thead th{
+  position:sticky;top:0;padding:10px 12px;background:#0d1119;border-bottom:1px solid var(--line);
+  color:var(--dim);font:700 9.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.12em;text-transform:uppercase;text-align:left;white-space:nowrap;
+}
+thead th.num{text-align:right}
+thead th[data-sort]{cursor:pointer;user-select:none}
+thead th[data-sort]:hover{color:var(--text)}
+thead th .arrow{opacity:0;margin-left:3px;font-size:8px;vertical-align:1px}
+thead th.sorted .arrow{opacity:1;color:var(--accent)}
+tbody tr{border-bottom:1px solid rgba(255,255,255,.045);transition:background .15s}
+tbody tr:last-child{border-bottom:0}
+tbody tr:hover{background:rgba(255,255,255,.028)}
+tbody tr.best-ask{background:linear-gradient(90deg,rgba(94,230,168,.09),transparent 55%)}
+tbody tr.best-bid{background:linear-gradient(90deg,rgba(120,255,214,.075),transparent 55%)}
+tbody tr.best-ask:hover{background:linear-gradient(90deg,rgba(94,230,168,.14),transparent 60%)}
+tbody tr.off{opacity:.42}
+tbody td{padding:11px 12px;vertical-align:middle}
+td.num{text-align:right;font-variant-numeric:tabular-nums;font:500 12.5px ui-monospace,SFMono-Regular,Menlo,monospace}
+.ex{display:flex;align-items:center;gap:10px;min-width:132px}
+.badge{display:grid;place-items:center;width:30px;height:30px;flex:none;border-radius:9px;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.05);color:var(--accent2);font:700 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.02em}
+.ex-name{font-size:13px;font-weight:600;letter-spacing:-.01em;white-space:nowrap}
+.ex-sub{color:var(--dim);font:500 9.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.04em;margin-top:2px;white-space:nowrap;max-width:236px;overflow:hidden;text-overflow:ellipsis}
+.price{font:600 14px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:-.02em;white-space:nowrap}
+.price small{color:var(--dim);font-size:9.5px;margin-left:3px;letter-spacing:0}
+.m-sub{display:none;margin-top:3px;color:var(--dim);font:500 10px ui-monospace,SFMono-Regular,Menlo,monospace}
+.m-detail{display:none}
+.chg{display:inline-block;min-width:62px;padding:3px 7px;border-radius:7px;font:600 11.5px ui-monospace,SFMono-Regular,Menlo,monospace;text-align:center}
+.chg.up{color:var(--up);background:rgba(94,230,168,.1)}
+.chg.down{color:var(--down);background:rgba(255,124,139,.1)}
+.chg.flat{color:var(--dim);background:rgba(255,255,255,.05)}
+.dev{font:600 11.5px ui-monospace,SFMono-Regular,Menlo,monospace}
+.dev.pos{color:var(--up)}.dev.neg{color:var(--down)}.dev.zero{color:var(--dim)}
+.tag{display:inline-block;margin-left:6px;padding:1px 5px;border-radius:5px;font:700 8.5px ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.06em;vertical-align:1px}
+.tag.ask{color:#062f20;background:var(--up)}
+.tag.bid{color:#062f26;background:var(--accent2)}
+.tag.dex{color:var(--accent2);background:rgba(120,255,214,.12);border:1px solid rgba(120,255,214,.3)}
+.tag.thin{color:var(--warn);background:rgba(255,207,107,.12);border:1px solid rgba(255,207,107,.3)}
+tbody tr.lowliq{opacity:.78}
+.vol{color:var(--muted)}
+.lat{color:var(--dim);font-size:11px}
+.lat.warn{color:var(--warn)}
+.lat.bad{color:var(--down)}
+.spark{width:78px;height:26px;display:block;margin-left:auto;overflow:visible}
+.spark path{fill:none;stroke:rgba(168,255,120,.65);stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round}
+.spark.bid path{stroke:rgba(120,255,214,.7)}
+.spark.flat path{stroke:rgba(255,255,255,.18)}
+.miss{color:var(--dim);font:500 11px ui-monospace,SFMono-Regular,Menlo,monospace}
+.state{padding:44px 16px;text-align:center;color:var(--muted);font-size:13px}
+.state.err{color:var(--down)}
+.foot{display:flex;justify-content:space-between;gap:18px;flex-wrap:wrap;margin-top:20px;color:var(--dim);font-size:11px;line-height:1.6}
+.foot b{color:var(--muted);font-weight:600}
+.note{max-width:70ch}
+@media(max-width:960px){
+  .hero{grid-template-columns:1fr;gap:22px}
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .spark,.col-spark{display:none}
+}
+@media(max-width:760px){
+  .wrap{width:calc(100% - 24px);padding:28px 0 34px}
+  .top{margin-bottom:24px}
+  .top-right{display:none}
+  h1{font-size:clamp(34px,10vw,46px)}
+  table{min-width:0}
+  thead{display:none}
+  tbody tr{display:grid;grid-template-columns:1fr auto;gap:0 10px;padding:12px 13px;position:relative}
+  tbody td{padding:0;text-align:left}
+  tbody td.name{grid-column:1;grid-row:1}
+  tbody td.price{grid-column:2;grid-row:1;align-self:center}
+  td.price .m-sub{display:none}
+  tbody td.chg{grid-column:2;grid-row:2;margin-top:7px}
+  tbody td.dev{grid-column:1;grid-row:2;margin-top:7px}
+  td.m-detail{display:block;grid-column:1/-1;grid-row:3;margin-top:7px;color:var(--dim);font:500 10.5px ui-monospace,SFMono-Regular,Menlo,monospace;line-height:1.5}
+  td.m-detail b{color:var(--muted);font-weight:600}
+  td.col-opt{display:none}
+  .ex{min-width:0}
+  .badge{width:28px;height:28px}
+  .price{font-size:13.5px}
+  .stat .v{font-size:21px}
+  .stats{gap:9px}
+  .stat{padding:13px}
+  .toolbar{padding:11px 12px;gap:9px}
+  .tb-right{width:100%}
+  .btn,.toggle{flex:0 0 auto}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<main class="wrap">
+  <div class="top">
+    <div class="brand"><i></i>Price Desk · Multi-Exchange Spot</div>
+    <div class="top-right"><span id="clock">--:--:-- UTC</span><span>·</span><span id="excount">20 venues</span></div>
+  </div>
+
+  <section class="hero">
+    <div>
+      <h1>多家交易所<br><em>同台比价</em>。</h1>
+      <p class="lede">同一交易对在中心化交易所与链上 DEX 池子里的最新价、买一/卖一、24 小时成交额，集中在一页。价格统一折算为 USDT，跨所价差实时计算。</p>
+    </div>
+    <div class="picker">
+      <label for="symbol">交易对</label>
+      <div class="search">
+        <input id="symbol" list="symbols" placeholder="输入币种，如 BTC" autocomplete="off" spellcheck="false" maxlength="12" aria-label="输入币种">
+        <span class="pair" id="pairstate">/ USDT</span>
+      </div>
+      <datalist id="symbols"></datalist>
+      <div class="chips" id="chips"></div>
+    </div>
+  </section>
+
+  <section class="watch" id="watch" aria-live="polite">
+    <div class="watch-head">
+      <span class="watch-title"><i></i>链上 / 链下脱锚监测</span>
+      <span class="watch-state" id="watch-state">连接中…</span>
+    </div>
+    <div class="watch-list" id="watch-list"></div>
+  </section>
+
+  <section class="stats" aria-label="汇总指标">
+    <div class="stat accent">
+      <div class="k"><span>参考中间价</span><span class="badge">median</span></div>
+      <div class="v" id="s-median">—</div>
+      <div class="s" id="s-median-sub">等待数据</div>
+    </div>
+    <div class="stat good">
+      <div class="k"><span>最低卖一 · 可买价</span><span class="badge">buy</span></div>
+      <div class="v" id="s-ask">—</div>
+      <div class="s" id="s-ask-sub">—</div>
+    </div>
+    <div class="stat">
+      <div class="k"><span>最高买一 · 可卖价</span><span class="badge">sell</span></div>
+      <div class="v" id="s-bid">—</div>
+      <div class="s" id="s-bid-sub">—</div>
+    </div>
+    <div class="stat" id="s-spread-card">
+      <div class="k"><span>跨所价差</span><span class="badge" id="s-spread-badge">bps</span></div>
+      <div class="v" id="s-spread">—</div>
+      <div class="s" id="s-spread-sub">—</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="toolbar">
+      <div class="tb-left">
+        <div class="pairbig" id="pairbig">BTC<span>/USDT</span></div>
+        <div class="status" id="status">加载中…</div>
+      </div>
+      <div class="tb-right">
+        <select class="btn" id="scope" aria-label="场所范围">
+          <option value="all" selected>全部场所</option>
+          <option value="cex">仅中心化 CEX</option>
+          <option value="dex">仅去中心 DEX</option>
+        </select>
+        <label class="toggle"><input type="checkbox" id="auto" checked>自动刷新</label>
+        <select class="btn" id="interval" aria-label="刷新间隔">
+          <option value="3000">3s</option>
+          <option value="5000" selected>5s</option>
+          <option value="10000">10s</option>
+          <option value="30000">30s</option>
+        </select>
+        <button class="btn" id="showoff" type="button" aria-pressed="false">显示未上架</button>
+        <button class="btn primary" id="refresh" type="button">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5V5H11"/></svg>
+          刷新
+        </button>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table id="table">
+        <thead>
+          <tr>
+            <th data-sort="name">交易所</th>
+            <th data-sort="price" class="num sorted">最新价 (USDT)<span class="arrow">▼</span></th>
+            <th data-sort="change" class="num">24h</th>
+            <th data-sort="bid" class="num col-opt">买一</th>
+            <th data-sort="ask" class="num col-opt">卖一</th>
+            <th data-sort="spread" class="num col-opt">点差</th>
+            <th data-sort="dev" class="num">偏离中位</th>
+            <th data-sort="vol" class="num col-opt">24h 成交额</th>
+            <th data-sort="lat" class="num col-opt">延迟</th>
+            <th class="col-spark"></th>
+          </tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <div class="state" id="state">加载中…</div>
+  </section>
+
+  <div class="foot">
+    <div class="note"><b>口径</b>：各所公开现货 ticker，最新价/买卖一按 USDT 计价；USD 报价（Coinbase）与链上池（DEX）按实时 USDT/USD 汇率折算并标注 ≈。DEX 行是该场所在该链上最深的池子，只有成交价没有盘口，不参与买卖一比较；流动性低于 $250k 的池子标注「低流动」且不计入中位价与价差。正价差仅代表盘口或池子价格重叠，未计手续费、滑点与提币成本，不代表可套利。</div>
+    <div>CEX：Binance · OKX · Bybit · Bitget · Gate · KuCoin · MEXC · HTX · Kraken · Bitstamp · Bitfinex · Crypto.com · Coinbase<br>DEX：Uniswap（Ethereum / Base / Arbitrum）· PancakeSwap（BNB Chain）· Aerodrome（Base）· Raydium / Orca（Solana）· 索引 DexScreener</div>
+  </div>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

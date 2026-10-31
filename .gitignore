@@ -1,0 +1,15 @@
+# build output
+/price-compare
+/price-compare.bak.*
+*.exe
+
+# local runtime state
+/var/
+state/
+*.log
+
+# secrets: never commit
+.env
+.env.*
+!.env.example
+!deploy/*.env.example
