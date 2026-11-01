@@ -332,3 +332,110 @@ func TestPriorModeHandlesConvergenceAndStillClears(t *testing.T) {
 		t.Fatal("alert opened in prior mode never cleared after the ring refilled")
 	}
 }
+
+// bookSnapshot is snapshot() with a 24h quote volume and a two-sided book of a
+// given half-spread, so one test venue can be made thin while the rest stay
+// liquid. Venues absent from volume get 0, which means "not reported" and must
+// keep the old last-price behaviour.
+func bookSnapshot(base string, bps, lastBps, volume map[string]float64, halfSpreadBps float64) comparison {
+	c := comparison{Base: base, Quote: "USDT", FetchedAt: time.Now().UnixMilli()}
+	for _, v := range testVenues {
+		mid := 700 * (1 + bps[v.id]/10000)
+		q := ticker{Exchange: v.id, Name: v.name, Kind: v.kind, Quote: "USDT"}
+		q.Price = mid * (1 + lastBps[v.id]/10000)
+		q.PriceUSDT = q.Price
+		q.BidUSDT = mid * (1 - halfSpreadBps/10000)
+		q.AskUSDT = mid * (1 + halfSpreadBps/10000)
+		q.VolumeQuote = volume[v.id]
+		c.Quotes = append(c.Quotes, q)
+	}
+	c.Summary = summarise(c.Quotes)
+	return c
+}
+
+func observe(t *testing.T, d *detector, n int, c comparison) []Event {
+	t.Helper()
+	var out []Event
+	for i := 0; i < n; i++ {
+		out = append(out, d.Observe(c.Base, c)...)
+	}
+	return out
+}
+
+func findVenueEvent(ev []Event, kind, venue string) *Event {
+	for i := range ev {
+		if ev[i].Kind == kind && ev[i].Venue == venue {
+			return &ev[i]
+		}
+	}
+	return nil
+}
+
+// A taker sweeping a thin book moves the last print several percent while the
+// quotable mid barely moves. The alert must follow the book, not the print.
+func TestThinCEXBookIsJudgedByMidNotLastPrint(t *testing.T) {
+	d := newDetector(defaultDetectConfig(), "", "", logNotifier{})
+	vol := map[string]float64{"gate": 3000} // $3k/day: one order walks the book
+	observe(t, d, 20, bookSnapshot("BTC", nil, nil, vol, 40))
+
+	// Last prints 500bps low after a sweep; the mid stays on consensus.
+	ev := observe(t, d, 3, bookSnapshot("BTC", nil, map[string]float64{"gate": -500}, vol, 40))
+	if e := findVenueEvent(ev, kindVenueDepeg, "gate"); e != nil {
+		t.Fatalf("single print on a thin book fired: %+v", e)
+	}
+	sig := findSignal(d.Signals("BTC"), "gate")
+	if sig == nil {
+		t.Fatal("thin venue missing from signals")
+	}
+	if math.Abs(sig.DevBps) > 1 {
+		t.Fatalf("thin venue dev = %.1fbps, want ~0 from the mid", sig.DevBps)
+	}
+}
+
+// A genuine move on a thin book is worth reporting, but never at alert level:
+// the mailbox is reserved for venues where the print can be traded at size.
+func TestThinCEXNeverEscalatesToAlert(t *testing.T) {
+	d := newDetector(defaultDetectConfig(), "", "", logNotifier{})
+	vol := map[string]float64{"gate": 3000}
+	observe(t, d, 20, bookSnapshot("BTC", nil, nil, vol, 40))
+
+	ev := observe(t, d, 3, bookSnapshot("BTC",
+		map[string]float64{"gate": -600}, map[string]float64{"gate": -600}, vol, 40))
+	e := findVenueEvent(ev, kindVenueDepeg, "gate")
+	if e == nil {
+		t.Fatal("thin dislocation produced no event at all")
+	}
+	if e.Severity != "watch" {
+		t.Fatalf("severity = %q, want watch on a thin book", e.Severity)
+	}
+	if e.ThresholdBps < 120 {
+		t.Fatalf("threshold = %.0fbps, want the thin floor of 120", e.ThresholdBps)
+	}
+}
+
+// The gate must not blind the detector on venues that can actually trade: the
+// same move on a liquid book still has to mail an alert.
+func TestLiquidCEXStillAlerts(t *testing.T) {
+	d := newDetector(defaultDetectConfig(), "", "", logNotifier{})
+	vol := map[string]float64{"gate": 5_000_000}
+	observe(t, d, 20, bookSnapshot("BTC", nil, nil, vol, 40))
+
+	ev := observe(t, d, 3, bookSnapshot("BTC",
+		map[string]float64{"gate": -600}, nil, vol, 40))
+	e := findVenueEvent(ev, kindVenueDepeg, "gate")
+	if e == nil {
+		t.Fatal("liquid dislocation produced no event")
+	}
+	if e.Severity != "alert" {
+		t.Fatalf("severity = %q, want alert on a liquid book", e.Severity)
+	}
+}
+
+func findSignal(sigs []Signal, venue string) *Signal {
+	for i := range sigs {
+		if sigs[i].Venue == venue {
+			return &sigs[i]
+		}
+	}
+	return nil
+}

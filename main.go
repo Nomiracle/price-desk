@@ -153,8 +153,8 @@ func main() {
 			cfg.MinSamples = *minSamples
 		}
 		applyDetectEnv(&cfg)
-		log.Printf("monitor: thresholds cex=%.0fbps dex=%.0fbps peg=%.0fbps confirm=%d",
-			cfg.CEXFloorBps, cfg.DEXFloorBps, cfg.PegFloorBps, cfg.Confirm)
+		log.Printf("monitor: thresholds cex=%.0fbps dex=%.0fbps peg=%.0fbps confirm=%d thin_cex_volume=%.0f$ thin_cex_floor=%.0fbps",
+			cfg.CEXFloorBps, cfg.DEXFloorBps, cfg.PegFloorBps, cfg.Confirm, cfg.ThinCEXVolumeUSD, cfg.ThinCEXFloorBps)
 		det = newDetector(cfg,
 			filepath.Join(*stateDir, "events.jsonl"),
 			filepath.Join(*stateDir, "baseline.json"),

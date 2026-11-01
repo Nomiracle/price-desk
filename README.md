@@ -50,6 +50,7 @@
 - **触发**：`|dev − 基线| > max(4σ, 下限)` 且 `|dev| > 绝对下限`，并**连续 2 个样本**成立。下限：CEX 45bps / 绝对 25bps；DEX 150bps / 绝对 60bps（池子最新成交价可能陈旧，且薄池已排除）。
 - **冻结基线**：某场所一旦进入报警状态，此后它的样本**不再进入该场所的基线**。否则一次持续数小时的脱锚会被基线慢慢吸收成「正常」，然后在价格仍偏离几百 bps 时发出假「回归」——线上确实出现过（WLD/HTX 从 301bps 涨到 346bps 却报回归），现有单测 `TestDetectorDoesNotAbsorbSustainedDislocation` 锁死该行为。
 - **冷却**：报警存续期间不再按时间重复推送，只有偏离扩大到上次的 1.6 倍以上才再报（持续脱锚不该变成定时器）；回到基线区间发一次「回归」并清除状态；清除后的 30 分钟内若再次越界且幅度未扩大，则抑制，避免阈值附近抖动刷屏。
+- **薄盘场所（CEX）**：24h 成交额低于 `PRICE_ALERT_THIN_CEX_VOLUME_USD`（默认 $50k）视为薄盘 → 判定改用**买一/卖一中间价**而不是最新成交价，阈值下限抬到 `PRICE_ALERT_THIN_CEX_BPS`（默认 120bps），并且**永不升级为 alert、只发 watch**。理由：薄盘上的价差在目标量级上不可成交。HTX 的 HBAR 24h 成交额仅 $3.8k、买一上方 1% 内挂单不足 $1，一笔 $1k 市价卖单的成交均价直接比买一低 4.5%，而检测器按最后一笔成交算出 -450bps 并发邮件。
 - **整币离散度**：`dispersion_bps` 超过 `max(2.5 × 自身基线, 150bps)` 连续 2 次 → 报「报价离散」，捕捉没有单一场所越界、但全场分歧的情况。
 - **稳定币锚**：Kraken `USDT/USD`、`USDC/USD`，`|价 − 1| > 50bps` 即告警（绝对口径，不跟滚动基线）；回锚发一次恢复。
 - **行情中断**：某场所对该币种**曾经成功报价 ≥3 次**，之后连续 5 次失败 → 「行情中断」，恢复后发「行情恢复」。从未报过价的场所（例如对上架范围外交易对返回 HTTP 500）不计为故障，避免每个币种刷一次假中断。中断/恢复按**场所**去重冷却，不会因为 29 个币种各发一遍。
@@ -67,7 +68,7 @@
 
 ### 阈值调参（不用改代码）
 
-全部走 `/etc/price-alert.env`，改完 `systemctl restart price-compare`，启动日志会打印生效值 `monitor: thresholds cex=.. dex=.. peg=.. confirm=..`。
+全部走 `/etc/price-alert.env`，改完 `systemctl restart price-compare`，启动日志会打印生效值 `monitor: thresholds cex=.. dex=.. peg=.. confirm=.. thin_cex_volume=.. thin_cex_floor=..`。
 
 | 变量 | 默认 | 作用 |
 | --- | --- | --- |
@@ -76,6 +77,8 @@
 | `PRICE_ALERT_CEX_ABS_BPS` / `_DEX_ABS_BPS` | 25 / 60 | 绝对偏离下限，低于此值即使越过基线也不报 |
 | `PRICE_ALERT_PEG_BPS` | 50 | 稳定币对美元脱锚阈值 |
 | `PRICE_ALERT_CONFIRM` | 2 | 连续多少个样本才成立 |
+| `PRICE_ALERT_THIN_CEX_VOLUME_USD` | 50000 | 24h 成交额低于此值的 CEX 按薄盘处理：改用中间价判定 |
+| `PRICE_ALERT_THIN_CEX_BPS` | 120 | 薄盘场所的阈值下限；薄盘只发 watch，永不进邮箱 |
 | `PRICE_ALERT_EMAIL_MIN_BPS` | 100（线上 300） | **只有偏离 ≥ 该值的 alert 才进邮箱**；watch 永不进邮箱 |
 | `PRICE_ALERT_EMAIL_ALL` | 0 | 设为 1 则全量发邮件（含 watch） |
 

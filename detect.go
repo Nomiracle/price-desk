@@ -38,6 +38,8 @@ type detectConfig struct {
 	DEXFloorBps        float64       // minimum threshold, on-chain pool
 	CEXAbsFloorBps     float64       // ignore small absolute deviations
 	DEXAbsFloorBps     float64
+	ThinCEXVolumeUSD   float64 // 24h quote volume under which a CEX book is too thin to alert on
+	ThinCEXFloorBps    float64 // minimum threshold applied to a thin CEX book
 	DispersionFloorBps float64
 	DispersionRatio    float64
 	PegFloorBps        float64
@@ -65,6 +67,8 @@ func applyDetectEnv(cfg *detectConfig) {
 	setF("PRICE_ALERT_PEG_BPS", &cfg.PegFloorBps)
 	setF("PRICE_ALERT_CEX_ABS_BPS", &cfg.CEXAbsFloorBps)
 	setF("PRICE_ALERT_DEX_ABS_BPS", &cfg.DEXAbsFloorBps)
+	setF("PRICE_ALERT_THIN_CEX_VOLUME_USD", &cfg.ThinCEXVolumeUSD)
+	setF("PRICE_ALERT_THIN_CEX_BPS", &cfg.ThinCEXFloorBps)
 	if v := strings.TrimSpace(os.Getenv("PRICE_ALERT_CONFIRM")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 20 {
 			cfg.Confirm = n
@@ -85,6 +89,8 @@ func defaultDetectConfig() detectConfig {
 		DEXFloorBps:        150,
 		CEXAbsFloorBps:     25,
 		DEXAbsFloorBps:     60,
+		ThinCEXVolumeUSD:   50000,
+		ThinCEXFloorBps:    120,
 		DispersionFloorBps: 150,
 		DispersionRatio:    2.5,
 		PegFloorBps:        50,
@@ -148,6 +154,7 @@ type alertState struct {
 type symbolState struct {
 	samples   []sample
 	prices    map[string]float64
+	thin      map[string]bool
 	hitStreak map[string]int
 	alert     map[string]alertState
 	errStreak map[string]int
@@ -211,6 +218,7 @@ func (d *detector) state(base string) *symbolState {
 	if !ok {
 		s = &symbolState{
 			prices:    map[string]float64{},
+			thin:      map[string]bool{},
 			hitStreak: map[string]int{},
 			alert:     map[string]alertState{},
 			errStreak: map[string]int{},
@@ -260,8 +268,19 @@ func (d *detector) Observe(base string, c comparison) []Event {
 		if q.Error != "" || q.NotListed || q.LowLiquidity || q.PriceUSDT <= 0 {
 			continue
 		}
-		s.prices[q.Exchange] = q.PriceUSDT
-		sm.dev[q.Exchange] = (q.PriceUSDT/consensus - 1) * 10000
+		// A 24h quote volume under the floor means one market order can walk
+		// the book several percent: on such a venue the last print is a
+		// liquidity artifact, so judge it by the book it would actually trade
+		// against and never by a single trade.
+		s.thin[q.Exchange] = d.thinBook(q)
+		px := q.PriceUSDT
+		if s.thin[q.Exchange] {
+			if mid := midUSDT(q); mid > 0 {
+				px = mid
+			}
+		}
+		s.prices[q.Exchange] = px
+		sm.dev[q.Exchange] = (px/consensus - 1) * 10000
 		// Freezing is only meaningful once the ring itself is the baseline.
 		// In prior mode the ring is empty, so freezing every new print would
 		// pin the venue to a stale prior forever and the alert could never
@@ -280,7 +299,7 @@ func (d *detector) Observe(base string, c comparison) []Event {
 	}
 
 	var out []Event
-	out = append(out, d.analyseSymbol(base, s, c, consensus, now)...)
+	out = append(out, d.analyseSymbol(base, s, consensus, now)...)
 	out = append(out, d.analyseFeeds(base, s, c, now)...)
 	d.mu.Unlock()
 
@@ -288,7 +307,7 @@ func (d *detector) Observe(base string, c comparison) []Event {
 	return out
 }
 
-func (d *detector) analyseSymbol(base string, s *symbolState, c comparison, consensus float64, now int64) []Event {
+func (d *detector) analyseSymbol(base string, s *symbolState, consensus float64, now int64) []Event {
 	if len(s.samples) < 3 {
 		// After a restart the baseline comes from the saved prior, but the
 		// first fresh prints can still be a burst of stale/one-off quotes. Let
@@ -307,6 +326,9 @@ func (d *detector) analyseSymbol(base string, s *symbolState, c comparison, cons
 		if s.kind[venue] == "dex" {
 			floor = d.cfg.DEXFloorBps
 			absFloor = d.cfg.DEXAbsFloorBps
+		} else if s.thin[venue] {
+			// A 70bps spread on a $4k/day book is normal, not a dislocation.
+			floor = math.Max(floor, d.cfg.ThinCEXFloorBps)
 		}
 		med, mad, n, ok, restored := d.baseline(base, s, venue)
 		if !ok {
@@ -339,13 +361,15 @@ func (d *detector) analyseSymbol(base string, s *symbolState, c comparison, cons
 
 		if anomalous && s.hitStreak[venue] >= need && d.allow(s, venue, now, dev) {
 			sev := "watch"
-			if delta > 2*thr {
+			if delta > 2*thr && !s.thin[venue] {
+				// Thin books stay watch-only: their prints cannot be traded at
+				// size, so mailing them turns the alert channel into noise.
 				sev = "alert"
 			}
 			out = append(out, Event{
 				At: now, Kind: kindVenueDepeg, Symbol: base, Venue: venue,
 				VenueName: s.name[venue], MarketKind: s.kind[venue],
-				Price: round8(priceOf(c, venue)), Consensus: round8(consensus),
+				Price: round8(priceOfSample(s, venue)), Consensus: round8(consensus),
 				DevBps: round1(dev), BaselineBps: round1(med), MADBps: round1(mad),
 				ThresholdBps: round1(thr), Severity: sev, Samples: n,
 			})
@@ -359,7 +383,7 @@ func (d *detector) analyseSymbol(base string, s *symbolState, c comparison, cons
 				out = append(out, Event{
 					At: now, Kind: kindVenueNormal, Symbol: base, Venue: venue,
 					VenueName: s.name[venue], MarketKind: s.kind[venue],
-					Price: round8(priceOf(c, venue)), Consensus: round8(consensus),
+					Price: round8(priceOfSample(s, venue)), Consensus: round8(consensus),
 					DevBps: round1(dev), BaselineBps: round1(med),
 					ThresholdBps: round1(thr), Severity: "info", Samples: n,
 					Note: "回到基线区间",
@@ -617,6 +641,8 @@ func (d *detector) Signals(base string) []Signal {
 		floor := d.cfg.CEXFloorBps
 		if s.kind[venue] == "dex" {
 			floor = d.cfg.DEXFloorBps
+		} else if s.thin[venue] {
+			floor = math.Max(floor, d.cfg.ThinCEXFloorBps)
 		}
 		med, mad, n, ok, _ := d.baseline(base, s, venue)
 		sig := Signal{
@@ -631,7 +657,7 @@ func (d *detector) Signals(base string) []Signal {
 			delta := math.Abs(dev - med)
 			if delta > thr {
 				sig.State = "watch"
-				if delta > 2*thr {
+				if delta > 2*thr && !s.thin[venue] {
 					sig.State = "alert"
 				}
 			}
@@ -645,6 +671,26 @@ func (d *detector) Signals(base string) []Signal {
 // price itself comes from the latest comparison, kept in the sample's dev map
 // implicitly. We re-derive it from consensus-free data when available.
 func priceOfSample(s *symbolState, venue string) float64 { return s.prices[venue] }
+
+// thinBook reports whether a centralised book is too shallow for its last
+// print to be treated as a venue price. VolumeQuote is the 24h quote turnover;
+// zero means the adapter did not report a figure, not that the book is dead,
+// so an unknown volume is never downgraded.
+func (d *detector) thinBook(q *ticker) bool {
+	if q.Kind != "cex" || d.cfg.ThinCEXVolumeUSD <= 0 || q.VolumeQuote <= 0 {
+		return false
+	}
+	return q.VolumeQuote < d.cfg.ThinCEXVolumeUSD
+}
+
+// midUSDT is the price the venue would actually trade around. Returns 0 when
+// the venue supplied no usable two-sided book.
+func midUSDT(q *ticker) float64 {
+	if q.BidUSDT > 0 && q.AskUSDT > q.BidUSDT {
+		return (q.BidUSDT + q.AskUSDT) / 2
+	}
+	return 0
+}
 
 // monitorStatus is the collector's self-report for /api/status.
 type monitorStatus struct {
@@ -804,14 +850,6 @@ func splitLines(b []byte) [][]byte {
 	return out
 }
 
-func priceOf(c comparison, venue string) float64 {
-	for i := range c.Quotes {
-		if c.Quotes[i].Exchange == venue {
-			return c.Quotes[i].PriceUSDT
-		}
-	}
-	return 0
-}
-
+// round1 rounds to one decimal place; round8 keeps alt-coin prices readable.
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 func round8(v float64) float64 { return math.Round(v*1e8) / 1e8 }
