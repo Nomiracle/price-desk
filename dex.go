@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -149,6 +151,62 @@ func dexPairs(ctx context.Context, c *http.Client, addr string) ([]dexPair, erro
 // print, so volume is compared against this floor rather than against zero.
 const dexActiveVolumeUSD = 1000
 
+// dexStableQuotes are quote assets whose USD price is ~1, so a pool against
+// one of them is a direct USD reference for the base token. A pool quoted in a
+// volatile asset (SOL/WETH/JLP/JitoSOL) derives its USD price through that
+// asset; an upstream stale reserve snapshot of such a pool then looks exactly
+// like a venue dislocation.
+var dexStableQuotes = map[string]bool{
+	"USD": true, "USDC": true, "USDT": true, "DAI": true, "FDUSD": true,
+	"USDS": true, "PYUSD": true, "USDE": true,
+}
+
+// dexCrossCheckBps is how far a volatile-quoted pool may sit from the same
+// token's USD-stable pool on the same venue before the print is treated as a
+// data defect rather than a venue price. A real venue dislocation moves every
+// pool on that venue together, so this suppresses stale snapshots without
+// hiding an actual event.
+const dexCrossCheckBps = 100.0
+
+// dexRefMinLiquidityUSD keeps a dust pool from becoming the reference. The
+// reference only has to be a usable USD print, not the deepest pool.
+const dexRefMinLiquidityUSD = 25_000
+
+// stableDEXPair returns the deepest pool on this venue quoted in a USD-stable
+// asset. It is the independent USD check for a volatile-quoted pool.
+func stableDEXPair(pairs []dexPair, chain string, dexIDs []string, addr string) *dexPair {
+	var out []dexPair
+	for _, p := range pairs {
+		if p.ChainID != chain || !containsString(dexIDs, p.DexID) {
+			continue
+		}
+		if !sameAddress(p.BaseToken.Address, addr) {
+			continue
+		}
+		if !dexStableQuotes[strings.ToUpper(p.QuoteToken.Symbol)] {
+			continue
+		}
+		if p.Volume.H24 < dexActiveVolumeUSD || p.Liquidity.USD < dexRefMinLiquidityUSD {
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Liquidity.USD > out[j].Liquidity.USD })
+	return &out[0]
+}
+
+// shortPool keeps an alert readable; the full address stays available on the
+// comparison page.
+func shortPool(addr string) string {
+	if len(addr) > 10 {
+		return addr[:10] + "…"
+	}
+	return addr
+}
+
 // bestDEXPair picks the deepest pool that the venue actually runs on this
 // chain. Anything else (another chain, another venue, an impostor contract) is
 // ignored rather than shown as this venue's price. Pools that traded are
@@ -226,14 +284,33 @@ func newDEXAdapter(id, name, chain string, dexIDs ...string) adapter {
 			if price <= 0 {
 				return rawTicker{}, errNotListed
 			}
-			return rawTicker{
+			t := rawTicker{
 				Price:        price,
 				Change24h:    p.PriceChange.H24,
 				QuoteVolume:  p.Volume.H24,
 				LiquidityUSD: p.Liquidity.USD,
 				MarketLabel:  p.BaseToken.Symbol + "/" + p.QuoteToken.Symbol,
 				Pool:         p.PairAddress,
-			}, nil
+			}
+			// A pool quoted in a volatile asset gets its USD price by chaining
+			// through that asset, so an upstream stale reserve snapshot shows
+			// up as a large, single-venue "depeg". Cross-check the print
+			// against the same token's USD-stable pool on the same venue: a
+			// real dislocation moves both pools together, a stale snapshot
+			// does not.
+			if !dexStableQuotes[strings.ToUpper(p.QuoteToken.Symbol)] {
+				if ref := stableDEXPair(pairs, chain, dexIDs, addr); ref != nil {
+					if refPrice := f(ref.PriceUSD); refPrice > 0 {
+						diff := (price/refPrice - 1) * 10000
+						if math.Abs(diff) > dexCrossCheckBps {
+							t.Suspect = true
+							t.SuspectNote = fmt.Sprintf("%s %s 报 %.6g，相差 %+.0f bps",
+								ref.BaseToken.Symbol+"/"+ref.QuoteToken.Symbol, shortPool(ref.PairAddress), refPrice, diff)
+						}
+					}
+				}
+			}
+			return t, nil
 		},
 	}
 }

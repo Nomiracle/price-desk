@@ -439,3 +439,52 @@ func findSignal(sigs []Signal, venue string) *Signal {
 	}
 	return nil
 }
+
+// A DEX print that failed the same-token USD-pool cross-check must never be
+// alerted on — that is how a stale upstream snapshot of a SOL-quoted pool
+// looked like an 1100bps BTC depeg — but it must stay visible.
+func TestSuspectDEXPrintNeverAlertsAndStaysVisible(t *testing.T) {
+	d := newDetector(defaultDetectConfig(), "", "", logNotifier{})
+	feed(t, d, 20, map[string]float64{})
+
+	for i := 0; i < 5; i++ {
+		c := snapshot("BTC", map[string]float64{"uniswap-eth": -1100}, nil)
+		c.Quotes[len(c.Quotes)-1].Suspect = true
+		for _, e := range d.Observe("BTC", c) {
+			if e.Kind == kindVenueDepeg && e.Venue == "uniswap-eth" {
+				t.Fatalf("suspect print alerted: %+v", e)
+			}
+		}
+	}
+	found := false
+	for _, s := range d.Signals("BTC") {
+		if s.Venue != "uniswap-eth" {
+			continue
+		}
+		found = true
+		if !s.Suspect || s.State != "suspect" {
+			t.Fatalf("signal = %+v, want state=suspect", s)
+		}
+		if s.Price <= 0 {
+			t.Fatalf("signal lost its display price: %+v", s)
+		}
+	}
+	if !found {
+		t.Fatal("suspect venue vanished from /api/signals")
+	}
+
+	// Control: the same print without the flags still alerts, so the filter
+	// cannot silently disable DEX alerting.
+	d2 := newDetector(defaultDetectConfig(), "", "", logNotifier{})
+	ev := feed(t, d2, 20, map[string]float64{})
+	ev = append(ev, feed(t, d2, 2, map[string]float64{"uniswap-eth": -1100})...)
+	alerted := false
+	for _, e := range ev {
+		if e.Kind == kindVenueDepeg && e.Venue == "uniswap-eth" {
+			alerted = true
+		}
+	}
+	if !alerted {
+		t.Fatal("control print did not alert; the suspect gate must not swallow real events")
+	}
+}

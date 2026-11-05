@@ -94,8 +94,15 @@ func formatAlert(e Event) string {
 		if e.Severity == "alert" {
 			head = "🚨 脱锚告警"
 		}
-		return fmt.Sprintf("%s  %s · %s\n现价 %.8g / CEX 共识 %.8g\n偏离 %+.1f bps（基线 %+.1f，阈值 %.1f）\n观测 %d 样本 · %s",
-			head, e.Symbol, e.VenueName, e.Price, e.Consensus, e.DevBps, e.BaselineBps, e.ThresholdBps, e.Samples, ts)
+		where := e.Symbol + " · " + e.VenueName
+		if e.Market != "" {
+			where += " · " + e.Market
+		}
+		if e.Pool != "" {
+			where += "\n池 " + shortPool(e.Pool)
+		}
+		return fmt.Sprintf("%s  %s\n现价 %.8g / CEX 共识 %.8g\n偏离 %+.1f bps（基线 %+.1f，阈值 %.1f）\n观测 %d 样本 · %s",
+			head, where, e.Price, e.Consensus, e.DevBps, e.BaselineBps, e.ThresholdBps, e.Samples, ts)
 	case kindVenueNormal:
 		return fmt.Sprintf("✅ 回归  %s · %s\n偏离 %+.1f bps，回到基线区间（%.1f）\n%s",
 			e.Symbol, e.VenueName, e.DevBps, e.BaselineBps, ts)

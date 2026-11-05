@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -302,5 +303,80 @@ func TestSummarySkipsThinPools(t *testing.T) {
 	}
 	if s.BestBid == nil || s.BestBid.Exchange != "binance" {
 		t.Fatalf("best bid = %+v, want binance (DEX has no book)", s.BestBid)
+	}
+}
+
+const addrWBTCsol = "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh"
+
+func orcaPairs(t *testing.T, pairs string) rawTicker {
+	t.Helper()
+	resetDEXCache()
+	defer resetDEXCache()
+	c := &http.Client{Transport: stubTransport(func(*http.Request) (string, bool) {
+		return `{"pairs":[` + pairs + `]}`, true
+	})}
+	a := adapterByID(t, "orca")
+	raw, err := a.Fetch(context.Background(), c, a.Market("BTC"))
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	return raw
+}
+
+// volatilePool / stablePool render an Orca WBTC pool on Solana with the given
+// quote asset and price.
+func volatilePool(pair, quoteAddr, quoteSym, price string, liq, vol float64) string {
+	return `{"chainId":"solana","dexId":"orca","pairAddress":"` + pair + `","baseToken":{"address":"` + addrWBTCsol + `","symbol":"WBTC"},"quoteToken":{"address":"` + quoteAddr + `","symbol":"` + quoteSym + `"},"priceUsd":"` + price + `","volume":{"h24":` + fmtNum(vol) + `},"liquidity":{"usd":` + fmtNum(liq) + `}}`
+}
+
+func fmtNum(f float64) string { return strconv.FormatFloat(f, 'f', 0, 64) }
+
+// A stale upstream snapshot of a SOL-quoted pool reads ~11% low while the
+// token's USD-quoted pool on the same venue is correct. The print must be
+// surfaced as suspect, not alerted on as a depeg.
+func TestDEXCrossCheckFlagsStaleVolatilePool(t *testing.T) {
+	raw := orcaPairs(t,
+		volatilePool("pool-sol", addrSOL, "SOL", "71400", 1_800_000, 7_200_000)+","+
+			volatilePool("pool-usdc", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "USDC", "80380.64", 142_020, 322_000))
+	if !raw.Suspect {
+		t.Fatal("stale SOL-quoted print was not flagged suspect")
+	}
+	if raw.Price != 71400 {
+		t.Fatalf("price = %v, want the raw print kept for display", raw.Price)
+	}
+	if !strings.Contains(raw.SuspectNote, "WBTC/USDC") || !strings.Contains(raw.SuspectNote, "80380") {
+		t.Fatalf("note = %q, want the USD reference pool and its price", raw.SuspectNote)
+	}
+}
+
+// When the two pools agree, the print is a normal venue price.
+func TestDEXCrossCheckAcceptsConsistentPools(t *testing.T) {
+	raw := orcaPairs(t,
+		volatilePool("pool-sol", addrSOL, "SOL", "80292.51", 1_845_000, 7_250_000)+","+
+			volatilePool("pool-usdc", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "USDC", "80380.64", 142_020, 322_000))
+	if raw.Suspect {
+		t.Fatalf("consistent pools flagged suspect: %s", raw.SuspectNote)
+	}
+}
+
+// No USD-quoted pool means no independent check; the print stays usable.
+func TestDEXNoUSDReferenceIsNotSuspect(t *testing.T) {
+	raw := orcaPairs(t, volatilePool("pool-sol", addrSOL, "SOL", "71400", 1_800_000, 7_200_000))
+	if raw.Suspect {
+		t.Fatalf("flagged without a reference: %s", raw.SuspectNote)
+	}
+}
+
+// A pool already quoted in a stablecoin is itself the USD reference and must
+// never be self-flagged.
+func TestDEXStableQuotedPickIsNeverSuspect(t *testing.T) {
+	raw := orcaPairs(t,
+		volatilePool("pool-usdc", "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "USDC", "80380.64", 1_900_000, 900_000)+","+
+			volatilePool("pool-sol", addrSOL, "SOL", "71400", 1_800_000, 7_200_000))
+	if raw.MarketLabel != "WBTC/USDC" {
+		t.Fatalf("market = %q, want the deepest USD pool", raw.MarketLabel)
+	}
+	if raw.Suspect {
+		t.Fatalf("stable-quoted pool flagged suspect: %s", raw.SuspectNote)
 	}
 }

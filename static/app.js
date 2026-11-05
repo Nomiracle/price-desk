@@ -263,6 +263,10 @@ function renderRows(quotes, s) {
     else if (q.exchange === bestBidEx) tr.className = 'best-bid';
     if (q.error || q.not_listed) tr.classList.add('off');
     if (q.low_liquidity) tr.classList.add('lowliq');
+    if (q.suspect) {
+      tr.classList.add('suspect');
+      if (q.suspect_note) tr.title = q.suspect_note;
+    }
 
     // exchange
     const tdName = document.createElement('td');
@@ -281,6 +285,9 @@ function renderRows(quotes, s) {
     }
     if (q.low_liquidity) {
       const t = document.createElement('span'); t.className = 'tag thin'; text(t, '低流动'); nm.appendChild(t);
+    }
+    if (q.suspect) {
+      const t = document.createElement('span'); t.className = 'tag susp'; text(t, '校验异常'); nm.appendChild(t);
     }
     if (q.exchange === bestAskEx) {
       const t = document.createElement('span'); t.className = 'tag ask'; text(t, '最低卖一'); nm.appendChild(t);

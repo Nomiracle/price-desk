@@ -25,6 +25,12 @@ type rawTicker struct {
 	LiquidityUSD float64 // DEX only: pool liquidity, USD
 	MarketLabel  string  // DEX only: "<base>/<quote>" of the pool actually priced
 	Pool         string  // DEX only: pool address
+	// Suspect marks a DEX print that contradicts the same token's USD-stable
+	// pool on the same venue. Upstream sometimes serves an older reserve
+	// snapshot for volatile-quoted pools, which is indistinguishable from a
+	// venue dislocation unless it is cross-checked.
+	Suspect     bool
+	SuspectNote string
 }
 
 type adapter struct {

@@ -32,13 +32,17 @@ type ticker struct {
 	LiquidityUSD float64  `json:"liquidity_usd,omitempty"`
 	LowLiquidity bool     `json:"low_liquidity,omitempty"`
 	Pool         string   `json:"pool,omitempty"`
-	PriceUSDT    float64  `json:"price_usdt"`
-	BidUSDT      float64  `json:"bid_usdt"`
-	AskUSDT      float64  `json:"ask_usdt"`
-	LatencyMS    int64    `json:"latency_ms"`
-	FetchedAt    int64    `json:"fetched_at"`
-	Error        string   `json:"error,omitempty"`
-	NotListed    bool     `json:"not_listed,omitempty"`
+	// Suspect means the venue's print failed the same-token USD-pool
+	// cross-check: shown (so the data defect is visible), never alerted on.
+	Suspect     bool    `json:"suspect,omitempty"`
+	SuspectNote string  `json:"suspect_note,omitempty"`
+	PriceUSDT   float64 `json:"price_usdt"`
+	BidUSDT     float64 `json:"bid_usdt"`
+	AskUSDT     float64 `json:"ask_usdt"`
+	LatencyMS   int64   `json:"latency_ms"`
+	FetchedAt   int64   `json:"fetched_at"`
+	Error       string  `json:"error,omitempty"`
+	NotListed   bool    `json:"not_listed,omitempty"`
 }
 
 type leg struct {
@@ -375,6 +379,8 @@ func buildComparisonValue(base string) comparison {
 			q.VolumeQuote = raw.QuoteVolume
 			q.LiquidityUSD = raw.LiquidityUSD
 			q.Pool = raw.Pool
+			q.Suspect = raw.Suspect
+			q.SuspectNote = raw.SuspectNote
 			// A pool thinner than this can be moved by a single small trade, so
 			// its print is not a comparable venue price. It stays visible and
 			// labelled, but is kept out of the median / spread maths.
@@ -436,7 +442,7 @@ func summarise(quotes []ticker) summary {
 	var bestBid, bestAsk *ticker
 	for i := range quotes {
 		q := &quotes[i]
-		if q.Error != "" || q.NotListed || q.LowLiquidity || q.PriceUSDT <= 0 {
+		if q.Error != "" || q.NotListed || q.LowLiquidity || q.Suspect || q.PriceUSDT <= 0 {
 			continue
 		}
 		sum.OkCount++

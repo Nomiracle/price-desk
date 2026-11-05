@@ -107,6 +107,8 @@ type Event struct {
 	Venue        string  `json:"venue,omitempty"`
 	VenueName    string  `json:"venue_name,omitempty"`
 	MarketKind   string  `json:"market_kind,omitempty"` // cex | dex
+	Market       string  `json:"market,omitempty"`      // dex: "<base>/<quote>" of the priced pool
+	Pool         string  `json:"pool,omitempty"`        // dex: pool address
 	Price        float64 `json:"price,omitempty"`
 	Consensus    float64 `json:"consensus,omitempty"`
 	DevBps       float64 `json:"dev_bps,omitempty"`
@@ -130,7 +132,10 @@ type Signal struct {
 	MADBps       float64 `json:"mad_bps"`
 	ThresholdBps float64 `json:"threshold_bps"`
 	Samples      int     `json:"samples"`
-	State        string  `json:"state"` // ok | watch | alert | warmup
+	// Suspect marks a print withheld from the detector because it failed the
+	// same-token USD-pool cross-check.
+	Suspect bool   `json:"suspect,omitempty"`
+	State   string `json:"state"` // ok | watch | alert | warmup | suspect
 }
 
 type sample struct {
@@ -142,7 +147,11 @@ type sample struct {
 	// dislocation slowly becomes "normal" and the detector reports a recovery
 	// that never happened.
 	frozen map[string]bool
-	ok     int
+	// suspect marks venues whose print failed the same-token USD-pool check in
+	// this cycle. They contribute no deviation, so they can never be alerted
+	// on, but the venue stays visible with its last known price.
+	suspect map[string]bool
+	ok      int
 }
 
 type alertState struct {
@@ -155,12 +164,15 @@ type symbolState struct {
 	samples   []sample
 	prices    map[string]float64
 	thin      map[string]bool
+	suspect   map[string]bool
 	hitStreak map[string]int
 	alert     map[string]alertState
 	errStreak map[string]int
 	down      map[string]bool
 	kind      map[string]string
 	name      map[string]string
+	market    map[string]string
+	pool      map[string]string
 }
 
 type prior struct {
@@ -171,9 +183,9 @@ type prior struct {
 }
 
 type priorFile struct {
-	Version int                          `json:"version"`
-	SavedAt int64                        `json:"saved_at"`
-	Symbols map[string]map[string]prior  `json:"symbols"`
+	Version int                         `json:"version"`
+	SavedAt int64                       `json:"saved_at"`
+	Symbols map[string]map[string]prior `json:"symbols"`
 }
 
 type detector struct {
@@ -219,12 +231,15 @@ func (d *detector) state(base string) *symbolState {
 		s = &symbolState{
 			prices:    map[string]float64{},
 			thin:      map[string]bool{},
+			suspect:   map[string]bool{},
 			hitStreak: map[string]int{},
 			alert:     map[string]alertState{},
 			errStreak: map[string]int{},
 			down:      map[string]bool{},
 			kind:      map[string]string{},
 			name:      map[string]string{},
+			market:    map[string]string{},
+			pool:      map[string]string{},
 		}
 		d.series[base] = s
 	}
@@ -257,6 +272,12 @@ func (d *detector) Observe(base string, c comparison) []Event {
 		q := &c.Quotes[i]
 		s.name[q.Exchange] = q.Name
 		s.kind[q.Exchange] = q.Kind
+		if q.Market != "" {
+			s.market[q.Exchange] = q.Market
+		}
+		if q.Pool != "" {
+			s.pool[q.Exchange] = q.Pool
+		}
 		if q.NotListed {
 			// A market the venue does not list is coverage, not an outage.
 			s.errStreak[q.Exchange] = 0
@@ -268,6 +289,19 @@ func (d *detector) Observe(base string, c comparison) []Event {
 		if q.Error != "" || q.NotListed || q.LowLiquidity || q.PriceUSDT <= 0 {
 			continue
 		}
+		// A suspect DEX print is a data defect, not a venue price: it stays
+		// visible on the comparison page but never enters the baseline, the
+		// consensus or the alert state machine.
+		if q.Suspect {
+			if sm.suspect == nil {
+				sm.suspect = map[string]bool{}
+			}
+			sm.suspect[q.Exchange] = true
+			s.suspect[q.Exchange] = true
+			s.prices[q.Exchange] = q.PriceUSDT
+			continue
+		}
+		s.suspect[q.Exchange] = false
 		// A 24h quote volume under the floor means one market order can walk
 		// the book several percent: on such a venue the last print is a
 		// liquidity artifact, so judge it by the book it would actually trade
@@ -369,6 +403,7 @@ func (d *detector) analyseSymbol(base string, s *symbolState, consensus float64,
 			out = append(out, Event{
 				At: now, Kind: kindVenueDepeg, Symbol: base, Venue: venue,
 				VenueName: s.name[venue], MarketKind: s.kind[venue],
+				Market: s.market[venue], Pool: s.pool[venue],
 				Price: round8(priceOfSample(s, venue)), Consensus: round8(consensus),
 				DevBps: round1(dev), BaselineBps: round1(med), MADBps: round1(mad),
 				ThresholdBps: round1(thr), Severity: sev, Samples: n,
@@ -383,6 +418,7 @@ func (d *detector) analyseSymbol(base string, s *symbolState, consensus float64,
 				out = append(out, Event{
 					At: now, Kind: kindVenueNormal, Symbol: base, Venue: venue,
 					VenueName: s.name[venue], MarketKind: s.kind[venue],
+					Market: s.market[venue], Pool: s.pool[venue],
 					Price: round8(priceOfSample(s, venue)), Consensus: round8(consensus),
 					DevBps: round1(dev), BaselineBps: round1(med),
 					ThresholdBps: round1(thr), Severity: "info", Samples: n,
@@ -452,6 +488,9 @@ func (d *detector) baseline(base string, s *symbolState, venue string) (med, mad
 	col := make([]float64, 0, len(s.samples))
 	for _, x := range s.samples {
 		if x.frozen != nil && x.frozen[venue] {
+			continue
+		}
+		if x.suspect != nil && x.suspect[venue] {
 			continue
 		}
 		if v, has := x.dev[venue]; has {
@@ -661,6 +700,28 @@ func (d *detector) Signals(base string) []Signal {
 					sig.State = "alert"
 				}
 			}
+		}
+		out = append(out, sig)
+	}
+	// A suspect venue contributes no deviation this cycle. Keep its row (with
+	// the last price) instead of making it vanish and reappear, so the data
+	// defect is visible rather than looking like coverage.
+	for venue := range cur.suspect {
+		if _, has := cur.dev[venue]; has {
+			continue
+		}
+		sig := Signal{
+			Symbol: base, Venue: venue, VenueName: s.name[venue],
+			MarketKind: s.kind[venue], Price: round8(priceOfSample(s, venue)),
+			Suspect: true, State: "suspect",
+		}
+		if med, mad, n, ok, _ := d.baseline(base, s, venue); ok {
+			floor := d.cfg.CEXFloorBps
+			if s.kind[venue] == "dex" {
+				floor = d.cfg.DEXFloorBps
+			}
+			sig.BaselineBps, sig.MADBps = round1(med), round1(mad)
+			sig.ThresholdBps, sig.Samples = round1(math.Max(d.cfg.K*mad, floor)), n
 		}
 		out = append(out, sig)
 	}
